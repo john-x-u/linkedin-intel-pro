@@ -255,7 +255,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
     if (savedReports.length === 0) return;
 
-    let combined = `# LinkedIn Analyzer — All Saved Research\n\n`;
+    let combined = `# LinkedIn Intel Pro — All Saved Research\n\n`;
     combined += `*Exported ${new Date().toLocaleDateString()} — ${savedReports.length} reports*\n\n`;
     combined += `---\n\n`;
 

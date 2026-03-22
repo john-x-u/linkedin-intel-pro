@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "LinkedIn Profile Analyzer",
+  "name": "LinkedIn Intel Pro",
   "version": "1.0.0",
-  "description": "Analyze LinkedIn profiles to discover how connections can help your project",
+  "description": "AI-powered LinkedIn intelligence — turn profiles and companies into actionable intel with warm path discovery and strategic engagement planning.",
   "permissions": ["activeTab", "storage", "scripting", "tabs", "sidePanel"],
   "host_permissions": ["https://www.linkedin.com/*"],
   "action": {
-    "default_title": "LinkedIn Analyzer",
+    "default_title": "LinkedIn Intel Pro",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

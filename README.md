@@ -1,4 +1,4 @@
-# LinkedIn Profile Analyzer
+# LinkedIn Intel Pro
 
 [![Chrome Extension](https://img.shields.io/badge/Platform-Chrome%20Extension-4285F4?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-34A853)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
@@ -48,32 +48,49 @@ A Chrome extension that turns LinkedIn profiles and company pages into actionabl
 
 ## Setup
 
-### 1. Install the Extension
+### Prerequisites
+
+- **Google Chrome** (or any Chromium-based browser like Edge, Brave, Arc)
+- An API key from at least one supported AI provider:
+  - [OpenAI](https://platform.openai.com/api-keys)
+  - [Anthropic](https://console.anthropic.com/settings/keys)
+  - [Google AI Studio](https://aistudio.google.com/app/apikey)
+- A LinkedIn account (you must be logged in for the extension to work)
+
+### 1. Download the Extension
+
+**Option A — Clone with Git:**
 
 ```bash
-git clone https://github.com/nicholasgriffintn/linkedin-analyzer.git
+git clone https://github.com/john-x-u/linkedin-intel-pro.git
 ```
 
-1. Open `chrome://extensions/` in Chrome
-2. Enable **Developer mode** (toggle in the top right)
+**Option B — Download ZIP:**
+
+1. Go to [github.com/john-x-u/linkedin-intel-pro](https://github.com/john-x-u/linkedin-intel-pro)
+2. Click the green **Code** button → **Download ZIP**
+3. Unzip the downloaded file
+
+### 2. Install in Chrome
+
+1. Open `chrome://extensions/` in your browser
+2. Enable **Developer mode** (toggle in the top right corner)
 3. Click **Load unpacked**
-4. Select the `linkedin-analyzer` folder
+4. Select the `linkedin-intel-pro` folder (the root folder containing `manifest.json`)
+5. The extension icon will appear in your Chrome toolbar — pin it for easy access
 
-The extension icon will appear in your Chrome toolbar.
-
-### 2. Configure Your API Key
+### 3. Configure Your API Key
 
 1. Click the extension icon in the toolbar — the side panel will open
-2. Click the **gear icon** in the top right corner to open Settings
+2. Click the **gear icon** (⚙) in the top right corner to open Settings
 3. Select your **AI Provider** (OpenAI, Anthropic, or Google)
-4. The model dropdown will update to show available models for that provider
-5. Enter your **API key**:
-   - **OpenAI** — Get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-   - **Anthropic** — Get one at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
-   - **Google** — Get one at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+4. Choose a **Model** from the dropdown — larger models produce better analysis but cost more per request
+5. Enter your **API key**
 6. Click **Save Settings**
 
 Your API key is stored in Chrome's sync storage and will follow you across devices where you're signed into Chrome.
+
+> **Tip:** If you're not sure which model to pick, start with a mid-tier option like GPT-5.4 Mini, Claude Sonnet 4.6, or Gemini 3.1 Flash — they offer a good balance of quality and cost.
 
 ---
 
@@ -81,64 +98,67 @@ Your API key is stored in Chrome's sync storage and will follow you across devic
 
 ### Analyzing a LinkedIn Profile
 
-1. Navigate to any LinkedIn profile (`linkedin.com/in/...`)
-2. Click the extension icon to open the side panel
-3. Enter your goal in the text field — be specific:
+1. **Navigate** to any LinkedIn profile page (`linkedin.com/in/...`)
+2. **Open the side panel** by clicking the LinkedIn Intel Pro icon in your toolbar
+3. **Describe your goal** in the text area — the more specific, the better:
    - *"Selling a cybersecurity platform to enterprise CISOs"*
    - *"Hiring a VP of Engineering for a Series B startup"*
    - *"Looking for advisors with AI/ML experience in healthcare"*
+   - *"Exploring partnership opportunities in fintech"*
 4. Click **Analyze Profile**
-5. The extension will work through several stages (you'll see status updates):
-   - Scanning profile
+5. The extension will work through several stages (you'll see live status updates):
+   - Scanning profile data
    - Researching companies
    - Gathering recent posts
    - Finding mutual connections
    - Analyzing with AI
-6. When complete, you'll see:
+6. When complete, your report includes:
    - **Executive Profile Summary** — 3 key points tailored to your goal
    - **Work Experience** — Full structured employment history
    - **Relevant Skills & Experience** — How their background maps to your needs
-   - **Strategic Engagement Angles** — 3-5 specific approaches
+   - **Strategic Engagement Angles** — 3-5 specific approaches to consider
    - **Ice Breakers** — Conversation starters referencing their actual posts
    - **Paths to Connect** — Warm introductions, shared companies, network bridges
 
-You can close the side panel during analysis — the background worker will keep running. Reopen it anytime to see the results.
+> **Note:** You can close the side panel during analysis — the background worker keeps running. Reopen it anytime to see results.
 
 ### Building an Intel Map
 
-1. Navigate to any LinkedIn company page (`linkedin.com/company/...`)
+1. **Navigate** to any LinkedIn company page (`linkedin.com/company/...`)
 2. The side panel will automatically show the **Build Intel Map** button
 3. Enter your goal and click **Build Intel Map**
 4. The extension will:
    - Scrape company details (industry, size, headquarters)
    - Scan employees from the company's people page
-   - Cross-reference with your previously analyzed profiles to find warm paths
+   - Cross-reference employees with your previously analyzed profiles to find warm paths
    - Generate a strategic engagement plan with AI
 5. The result is a visual three-tier map:
    - **Warm Paths** — People from your network connected to this company
-   - **Target People** — Key employees ranked by relevance with role badges
+   - **Target People** — Key employees ranked by relevance with role badges (Champion, Decision Maker, Evaluator, Influencer, Blocker, Connector)
    - **Approach Sequence** — Step-by-step plan for who to contact and how
 
 ### Reviewing Saved Research
 
-1. Click the **clock icon** in the side panel header
+1. Click the **clock icon** (🕐) in the side panel header to open Saved Reports
 2. Browse all previously analyzed profiles and intel maps
-3. Click any item to reload and view it
-4. Delete individual reports with the **x** button
+3. Click any item to reload and view the full report
+4. Delete individual reports with the **×** button
 5. Click **Download All .md** to export your entire research library as a single markdown file
 
-### Exporting a Report
+### Exporting Reports
 
-- **Copy** — Click the copy button in the results header to copy full markdown to your clipboard
-- **Export .md** — Click "Export .md" to download the report as a markdown file
-- **Bulk Export** — From Saved Reports, click "Download All .md" to download everything at once
+| Action | How |
+|---|---|
+| **Copy to clipboard** | Click the **Copy** button in the results header |
+| **Download single report** | Click **Export .md** in the results header |
+| **Download all reports** | Open Saved Reports → click **Download All .md** |
 
 ---
 
 ## Project Structure
 
 ```
-linkedin-analyzer/
+linkedin-intel-pro/
 ├── manifest.json                    # Extension config (Manifest V3, side panel)
 ├── background/
 │   └── background.js                # Service worker: analysis pipeline, LLM calls, autosave
@@ -210,7 +230,7 @@ linkedin-analyzer/
 
 Contributions are welcome! Here are some ways you can help:
 
-- Report bugs or suggest features via [Issues](https://github.com/nicholasgriffintn/linkedin-analyzer/issues)
+- Report bugs or suggest features via [Issues](https://github.com/john-x-u/linkedin-intel-pro/issues)
 - Submit pull requests for bug fixes or new features
 - Improve the scraping logic for better LinkedIn compatibility
 - Add support for additional LLM providers
