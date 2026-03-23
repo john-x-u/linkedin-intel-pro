@@ -818,6 +818,14 @@ ${pathsMd}`;
   }
 
   function markdownToHtml(md) {
+    // Sanitise: escape any raw HTML in the LLM output before converting
+    // markdown syntax to HTML.  This prevents XSS via injected tags.
+    md = md
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
     // Merge numbered list items with their description paragraphs
     // Pattern: "1. **Title:**\n\nDescription text\n\n2. **Title:**..."
     // Becomes: "1. **Title:** Description text\n2. **Title:**..."
@@ -851,6 +859,17 @@ ${pathsMd}`;
       .replace(/ class="[uo]l"/g, "")
       .replace(/^(?!<[hulo])((?!<).+)$/gm, "<p>$1</p>")
       .replace(/\n{2,}/g, "\n");
+
+    // Merge adjacent <ol> blocks separated by any non-heading content (e.g. <ul>,
+    // <p>, links) into a single <ol> so numbering stays sequential (1,2,3 not 1,1,1).
+    // Stop merging at headings (<h2>/<h3>) which indicate a new section.
+    html = html.replace(
+      /<\/ol>([\s\S]*?)<ol>/g,
+      (match, middle) => {
+        if (/<h[23]>/.test(middle)) return match; // new section — don't merge
+        return middle;
+      }
+    );
 
     return html;
   }

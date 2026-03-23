@@ -34,8 +34,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       helpUrl: "https://console.anthropic.com/settings/keys",
       helpLabel: "console.anthropic.com",
       models: [
-        { value: "claude-sonnet-4-6-20250217", label: "Claude Sonnet 4.6 (Recommended)" },
-        { value: "claude-opus-4-6-20250205", label: "Claude Opus 4.6" },
+        { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Recommended)" },
+        { value: "claude-opus-4-6", label: "Claude Opus 4.6" },
         { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
         { value: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
       ],
@@ -52,9 +52,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       helpUrl: "https://aistudio.google.com/apikey",
       helpLabel: "aistudio.google.com",
       models: [
-        { value: "gemini-3.1-pro", label: "Gemini 3.1 Pro (Recommended)" },
-        { value: "gemini-3.1-flash", label: "Gemini 3.1 Flash" },
-        { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+        { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Recommended)" },
+        { value: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
+        { value: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite" },
         { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
       ],
       validate: (key) => {
@@ -66,7 +66,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // ── Load settings (with migration from old format) ─────────────
 
-  const stored = await chrome.storage.sync.get({
+  const stored = await chrome.storage.local.get({
     provider: "",
     model: "",
     apiKeys: {},
@@ -74,18 +74,32 @@ document.addEventListener("DOMContentLoaded", async () => {
     apiKey: "",
   });
 
-  // Migrate from old single-key format
+  // Migrate from old sync storage format
+  const syncStored = await chrome.storage.sync.get({ provider: "", model: "", apiKeys: {}, apiKey: "" });
+  if (syncStored.apiKey || Object.keys(syncStored.apiKeys || {}).length > 0) {
+    // Merge sync keys into local, preferring any already-local values
+    for (const [k, v] of Object.entries(syncStored.apiKeys || {})) {
+      if (!stored.apiKeys[k]) stored.apiKeys[k] = v;
+    }
+    if (syncStored.apiKey && !stored.apiKeys.openai) stored.apiKeys.openai = syncStored.apiKey;
+    stored.provider = stored.provider || syncStored.provider || "openai";
+    stored.model = stored.model || syncStored.model || "gpt-4o";
+    await chrome.storage.local.set({ provider: stored.provider, model: stored.model, apiKeys: stored.apiKeys });
+    // Remove keys from sync storage so they no longer propagate to other devices
+    await chrome.storage.sync.remove(["provider", "model", "apiKeys", "apiKey"]);
+  }
+
+  // Migrate from old single-key format (local)
   if (stored.apiKey && !stored.apiKeys.openai) {
     stored.apiKeys.openai = stored.apiKey;
     stored.provider = stored.provider || "openai";
     stored.model = stored.model || "gpt-4o";
-    // Save migrated data and remove old key
-    await chrome.storage.sync.set({
+    await chrome.storage.local.set({
       provider: stored.provider,
       model: stored.model,
       apiKeys: stored.apiKeys,
     });
-    await chrome.storage.sync.remove("apiKey");
+    await chrome.storage.local.remove("apiKey");
   }
 
   const currentProvider = stored.provider || "openai";
@@ -133,7 +147,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Update the key for this provider
     apiKeys[provider] = key;
 
-    await chrome.storage.sync.set({ provider, model, apiKeys });
+    await chrome.storage.local.set({ provider, model, apiKeys });
     showStatus("Settings saved successfully.", "success");
   });
 

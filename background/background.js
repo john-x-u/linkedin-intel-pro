@@ -16,6 +16,28 @@ chrome.sidePanel
 const SYSTEM_PROMPT =
   "You are a professional networking analyst. You analyze LinkedIn profiles and provide structured insights about how a person's experience and skills could help someone achieve their goal — whether that's selling, hiring, fundraising, finding advisors, or building partnerships. Be specific and actionable. Use markdown formatting for your response.";
 
+// ── Migrate API keys from sync → local (one-time) ─────────────────
+
+async function migrateSettingsFromSync() {
+  const local = await chrome.storage.local.get({ apiKeys: {}, provider: "", model: "" });
+  if (local.provider && Object.keys(local.apiKeys).length > 0) return; // already migrated
+
+  const sync = await chrome.storage.sync.get({ provider: "", model: "", apiKeys: {}, apiKey: "" });
+  if (!sync.apiKey && Object.keys(sync.apiKeys || {}).length === 0) return; // nothing to migrate
+
+  const apiKeys = { ...sync.apiKeys };
+  if (sync.apiKey && !apiKeys.openai) apiKeys.openai = sync.apiKey;
+
+  await chrome.storage.local.set({
+    provider: sync.provider || "openai",
+    model: sync.model || "gpt-5.4",
+    apiKeys,
+  });
+  await chrome.storage.sync.remove(["provider", "model", "apiKeys", "apiKey"]);
+}
+
+migrateSettingsFromSync().catch(console.error);
+
 // ── Message listener ───────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -224,11 +246,10 @@ async function runAnalysis(tabId, projectDescription) {
       timestamp: Date.now(),
     });
 
-    const settings = await chrome.storage.sync.get({
+    const settings = await chrome.storage.local.get({
       provider: "openai",
       model: "gpt-5.4",
       apiKeys: {},
-      // Legacy migration fallback
       apiKey: "",
     });
 
@@ -344,7 +365,7 @@ async function callOpenAI(model, apiKey, userPrompt) {
           { role: "user", content: userPrompt },
         ],
         temperature: 0.7,
-        max_completion_tokens: 1500,
+        max_completion_tokens: 4000,
       }),
     }
   );
@@ -371,7 +392,7 @@ async function callAnthropic(model, apiKey, userPrompt) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 1500,
+      max_tokens: 4000,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     }),
@@ -395,11 +416,11 @@ async function callAnthropic(model, apiKey, userPrompt) {
 // ── Google (Gemini) ────────────────────────────────────────────────
 
 async function callGoogle(model, apiKey, userPrompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
     body: JSON.stringify({
       systemInstruction: {
         parts: [{ text: SYSTEM_PROMPT }],
@@ -412,7 +433,7 @@ async function callGoogle(model, apiKey, userPrompt) {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 1500,
+        maxOutputTokens: 4000,
       },
     }),
   });
@@ -500,7 +521,7 @@ async function runIntelMap(tabId, companyUrl, goal) {
     // 4. LLM analysis
     await setIntelJob({ status: "intel_analyzing", timestamp: Date.now() });
 
-    const settings = await chrome.storage.sync.get({
+    const settings = await chrome.storage.local.get({
       provider: "openai",
       model: "gpt-5.4",
       apiKeys: {},
@@ -979,7 +1000,7 @@ Adapt ALL sections below to match this goal type. For example:
 - If research/learning: highlight what unique insights they can share
 - If networking: focus on long-term relationship value and shared interests
 
-Provide your analysis in the following structured format (do NOT include a Work Experience section — that is handled separately). Use numbered lists (1. 2. 3.) for all items in every section below:
+Your response MUST contain ONLY the four sections listed below — nothing else. Work Experience is displayed separately in the UI, so you must NEVER list or summarize job history. Skip straight to analysis. Use numbered lists (1. 2. 3.) for all items in every section:
 
 ### Executive Profile Summary
 Synthesize ALL the information above — profile, experience, company context, and recent posts — into exactly 3 numbered points tailored to MY SPECIFIC GOAL stated above. Imagine the reader has only 10 seconds. Each point should:
