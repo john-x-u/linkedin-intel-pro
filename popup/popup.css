@@ -728,6 +728,100 @@ a.intel-card {
   text-align: center;
 }
 
+.path-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.path-reason {
+  display: inline-block;
+  font-size: 11px;
+  color: #444;
+  background: #eef4ff;
+  border-radius: 10px;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+
+.path-strategy-content {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: #f0f7ff;
+  border-radius: 8px;
+  border-left: 3px solid #4a7cf7;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #333;
+}
+
+.path-strategy-content ol,
+.path-strategy-content ul {
+  padding-left: 22px;
+  margin-bottom: 8px;
+}
+
+.path-strategy-content li {
+  margin-bottom: 6px;
+}
+
+.path-strategy-content strong {
+  font-weight: 600;
+}
+
+/* Compact mutual connections summary */
+.mutual-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 6px 0;
+  flex-wrap: wrap;
+}
+
+.mutual-summary-names {
+  font-size: 13px;
+  color: #555;
+  flex: 1;
+  min-width: 0;
+}
+
+.mutual-expand-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  position: relative;
+}
+
+.mutual-expand-icon::after {
+  content: "";
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid #888;
+  border-bottom: 2px solid #888;
+  transform: rotate(45deg);
+  position: absolute;
+  top: 3px;
+  left: 5px;
+  transition: transform 0.2s;
+}
+
+.mutual-summary.expanded .mutual-expand-icon::after {
+  transform: rotate(-135deg);
+  top: 6px;
+}
+
+.mutual-detail-list {
+  display: none;
+  margin-top: 8px;
+}
+
+.mutual-summary.expanded .mutual-detail-list {
+  display: block;
+}
+
 /* ── Processing Overlay ──────────────────────────────────────── */
 
 .processing-overlay {
@@ -772,4 +866,22 @@ a.intel-card {
   font-size: 14px;
   color: #888;
   text-align: center;
+}
+
+.cancel-btn {
+  margin-top: 4px;
+  padding: 6px 20px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  color: #666;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cancel-btn:hover {
+  background: #f5f5f5;
+  border-color: #999;
+  color: #333;
 }

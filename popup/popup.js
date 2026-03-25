@@ -25,6 +25,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const intelMapResults = document.getElementById("intel-map-results");
   const processingOverlay = document.getElementById("processing-overlay");
   const processingText = document.getElementById("processing-text");
+  const cancelBtn = document.getElementById("cancel-btn");
 
   let lastReport = { name: "", markdown: "", experience: [] };
   let lastIntelMap = null;
@@ -110,6 +111,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         );
       }
 
+      // Pre-flight: verify API key is configured before starting
+      const settings = await chrome.storage.local.get({ provider: "openai", apiKeys: {}, apiKey: "" });
+      const prov = settings.provider || "openai";
+      const hasKey = (settings.apiKeys && settings.apiKeys[prov]) || (prov === "openai" && settings.apiKey);
+      if (!hasKey) {
+        throw new Error(
+          `No API key saved for ${prov}. Open Settings (⚙) and click "Save Settings" after entering your key.`
+        );
+      }
+
       // Tell background to start the job
       await chrome.runtime.sendMessage({
         type: "startAnalysis",
@@ -123,6 +134,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       showError(err.message);
       setLoading(false);
     }
+  });
+
+  // ── Cancel button ──────────────────────────────────────────────────
+
+  cancelBtn.addEventListener("click", async () => {
+    stopPolling();
+    await chrome.runtime.sendMessage({ type: "cancelAnalysis" });
+    setLoading(false);
+    hideError();
   });
 
   // ── Polling ──────────────────────────────────────────────────────
@@ -372,18 +392,53 @@ document.addEventListener("DOMContentLoaded", async () => {
       finalHtml = workExpHtml + mdHtml;
     }
 
+    // Extract Connection Strategy from LLM output and move it into Paths to Connect
+    let connectionStrategyHtml = "";
+    const strategyRe = /<h3>Connection Strategy<\/h3>([\s\S]*?)(?=<h3>|$)/i;
+    const strategyMatch = finalHtml.match(strategyRe);
+    if (strategyMatch) {
+      connectionStrategyHtml = strategyMatch[1].trim();
+      finalHtml = finalHtml.replace(strategyMatch[0], "");
+    }
+
     // Append Paths to Connect section at the end if available
-    const pathsHtml = buildPathsToConnectHtml(report.pathsToConnect);
+    const pathsHtml = buildPathsToConnectHtml(report.pathsToConnect, connectionStrategyHtml);
     if (pathsHtml) {
       finalHtml += pathsHtml;
     }
 
     reportContent.innerHTML = finalHtml;
+
+    // Bind expand/collapse toggle (inline onclick is blocked by CSP)
+    const mutualHeader = reportContent.querySelector(".mutual-summary-header");
+    if (mutualHeader) {
+      mutualHeader.addEventListener("click", () => {
+        mutualHeader.parentElement.classList.toggle("expanded");
+      });
+    }
+
     results.classList.remove("hidden");
     hideError();
   }
 
-  function buildPathsToConnectHtml(paths) {
+  function buildConnectionReasonsHtml(reasons) {
+    if (!reasons || reasons.length === 0) return "";
+    let html = '<div class="path-reasons">';
+    const icons = {
+      shared_company: "&#x1F3E2;",
+      same_company: "&#x1F3E2;",
+      role_overlap: "&#x1F4BC;",
+      same_location: "&#x1F4CD;",
+    };
+    for (const r of reasons) {
+      const icon = icons[r.type] || "&#x1F517;";
+      html += `<span class="path-reason">${icon} ${escapeHtml(r.detail)}</span>`;
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function buildPathsToConnectHtml(paths, connectionStrategyHtml) {
     if (!paths) {
       // Show the section with an encouraging message even when no data yet
       return `<div class="paths-section"><h3>Paths to Connect</h3>
@@ -391,23 +446,40 @@ document.addEventListener("DOMContentLoaded", async () => {
         <div class="path-stats-detail">As you analyze profiles, this section will automatically find shared companies, warm introductions, and connection paths across your network.</div></div></div>`;
     }
 
-    const hasConnections =
-      (paths.companyOverlaps && paths.companyOverlaps.length > 0) ||
-      (paths.companyBridges && paths.companyBridges.length > 0) ||
-      (paths.introductionChains && paths.introductionChains.length > 0);
-
     let html = '<div class="paths-section"><h3>Paths to Connect</h3>';
 
-    // Mutual Connections (from LinkedIn)
+    // 1. Connection Strategy (AI-generated, moved here from report body)
+    if (connectionStrategyHtml) {
+      html += `<div class="path-strategy-content">${connectionStrategyHtml}</div>`;
+    }
+
+    // 2. Mutual Connections — compact summary with expand toggle
     if (paths.mutualConnections && paths.mutualConnections.length > 0) {
       const analyzed = paths.mutualConnections.filter((mc) => mc.isAnalyzed);
       const notAnalyzed = paths.mutualConnections.filter((mc) => !mc.isAnalyzed);
       const totalCount = paths.networkStats?.mutualCount || paths.mutualConnections.length;
+      const allMutuals = [...analyzed, ...notAnalyzed];
+
+      // Build compact summary line
+      const previewNames = allMutuals.slice(0, 3).map((mc) => {
+        const name = escapeHtml(mc.name);
+        return mc.isAnalyzed ? `<strong>${name}</strong>` : name;
+      });
+      const remaining = totalCount - previewNames.length;
+      let summaryText = previewNames.join(", ");
+      if (remaining > 0) summaryText += `, +${remaining} more`;
 
       html += '<div class="path-group">';
-      html += `<div class="path-group-label mutual-label">Mutual Connections (${totalCount})</div>`;
+      const expandByDefault = !connectionStrategyHtml;
+      html += `<div class="mutual-summary${expandByDefault ? " expanded" : ""}">`;
+      html += '<div class="mutual-summary-header">';
+      html += `<span class="path-group-label mutual-label">Mutual Connections (${totalCount})</span>`;
+      html += `<span class="mutual-summary-names">${summaryText}</span>`;
+      html += `<span class="mutual-expand-icon"></span>`;
+      html += `</div>`;
 
-      // Show analyzed mutual connections first (highlighted)
+      // Expandable detail cards
+      html += '<div class="mutual-detail-list">';
       for (const mc of analyzed) {
         html += '<div class="path-card mutual-analyzed">';
         html += '<div class="path-icon">&#x2B50;</div>';
@@ -415,11 +487,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         html += `<div class="path-name"><a href="${escapeHtml(mc.profileUrl)}" target="_blank" rel="noopener">${escapeHtml(mc.name)}</a> <span class="analyzed-badge">Analyzed</span></div>`;
         html += `<div class="path-detail">${escapeHtml(mc.title)}</div>`;
         if (mc.location) html += `<div class="path-meta">${escapeHtml(mc.location)}</div>`;
+        html += buildConnectionReasonsHtml(mc.connectionReasons);
         if (mc.analyzedDate) html += `<div class="path-date">Analyzed ${escapeHtml(mc.analyzedDate)}</div>`;
         html += '</div></div>';
       }
-
-      // Show first 5 non-analyzed mutual connections
       for (const mc of notAnalyzed.slice(0, 5)) {
         html += '<div class="path-card">';
         html += '<div class="path-icon">&#x1F465;</div>';
@@ -427,16 +498,17 @@ document.addEventListener("DOMContentLoaded", async () => {
         html += `<div class="path-name"><a href="${escapeHtml(mc.profileUrl)}" target="_blank" rel="noopener">${escapeHtml(mc.name)}</a></div>`;
         html += `<div class="path-detail">${escapeHtml(mc.title)}</div>`;
         if (mc.location) html += `<div class="path-meta">${escapeHtml(mc.location)}</div>`;
+        html += buildConnectionReasonsHtml(mc.connectionReasons);
         html += '</div></div>';
       }
-
       if (notAnalyzed.length > 5) {
         html += `<div class="path-more">+ ${notAnalyzed.length - 5} more mutual connections</div>`;
       }
-      html += '</div>';
+      html += '</div></div>'; // close mutual-detail-list, mutual-summary
+      html += '</div>'; // close path-group
     }
 
-    // Company Overlaps
+    // 3. Company Overlaps
     if (paths.companyOverlaps && paths.companyOverlaps.length > 0) {
       html += '<div class="path-group">';
       html += '<div class="path-group-label overlap-label">Shared Companies</div>';
@@ -460,7 +532,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       html += '</div>';
     }
 
-    // Company Bridges
+    // 4. Company Bridges
     if (paths.companyBridges && paths.companyBridges.length > 0) {
       html += '<div class="path-group">';
       html += '<div class="path-group-label bridge-label">People You Know at Their Company</div>';
@@ -477,7 +549,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       html += '</div>';
     }
 
-    // Introduction Chains
+    // 5. Introduction Chains
     if (paths.introductionChains && paths.introductionChains.length > 0) {
       html += '<div class="path-group">';
       html += '<div class="path-group-label chain-label">Potential Introductions</div>';
@@ -495,11 +567,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       html += '</div>';
     }
 
-    if (!hasConnections) {
-      html += '<div class="path-stats"><div class="path-stats-detail">No shared companies or warm paths found yet. Keep analyzing profiles to build your network graph.</div></div>';
-    }
-
-    // Network Stats
+    // 6. Network Stats
     if (paths.networkStats && paths.networkStats.totalAnalyzed > 0) {
       html += '<div class="path-stats">';
       html += `<div class="path-stats-label">Your Network: ${paths.networkStats.totalAnalyzed} profiles analyzed</div>`;
@@ -688,7 +756,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       ? new Date(report.timestamp).toLocaleDateString()
       : new Date().toLocaleDateString();
 
-    const pathsMd = buildPathsToConnectMd(report.pathsToConnect);
+    // Extract Connection Strategy from LLM markdown and move it into Paths to Connect
+    let connectionStrategyMd = "";
+    const strategyMdRe = /### Connection Strategy\n([\s\S]*?)(?=\n### |$)/;
+    const strategyMdMatch = finalMd.match(strategyMdRe);
+    let cleanedMd = finalMd;
+    if (strategyMdMatch) {
+      connectionStrategyMd = strategyMdMatch[1].trim();
+      cleanedMd = finalMd.replace(strategyMdMatch[0], "").trim();
+    }
+
+    const pathsMd = buildPathsToConnectMd(report.pathsToConnect, connectionStrategyMd);
 
     return `# LinkedIn Profile Analysis: ${report.name}
 
@@ -698,7 +776,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 ---
 
-${finalMd}
+${cleanedMd}
 ${pathsMd}`;
   }
 
@@ -757,26 +835,24 @@ ${pathsMd}`;
     return md;
   }
 
-  function buildPathsToConnectMd(paths) {
+  function buildPathsToConnectMd(paths, connectionStrategyMd) {
     if (!paths) return "";
 
     let md = "### Paths to Connect\n\n";
 
+    // Connection Strategy (AI-generated, moved here)
+    if (connectionStrategyMd) {
+      md += `**Connection Strategy**\n${connectionStrategyMd}\n\n`;
+    }
+
+    // Compact mutual connections list
     if (paths.mutualConnections && paths.mutualConnections.length > 0) {
       const totalCount = paths.networkStats?.mutualCount || paths.mutualConnections.length;
-      md += `**Mutual Connections (${totalCount})**\n`;
       const analyzed = paths.mutualConnections.filter((mc) => mc.isAnalyzed);
       const notAnalyzed = paths.mutualConnections.filter((mc) => !mc.isAnalyzed);
-      for (const mc of analyzed) {
-        md += `* **${mc.name}** — ${mc.title} *(Previously Analyzed)*\n`;
-      }
-      for (const mc of notAnalyzed.slice(0, 10)) {
-        md += `* ${mc.name} — ${mc.title}\n`;
-      }
-      if (notAnalyzed.length > 10) {
-        md += `* + ${notAnalyzed.length - 10} more mutual connections\n`;
-      }
-      md += "\n";
+      const allMutuals = [...analyzed, ...notAnalyzed];
+      const names = allMutuals.map((mc) => mc.isAnalyzed ? `**${mc.name}**` : mc.name);
+      md += `**Mutual Connections (${totalCount}):** ${names.join(", ")}\n\n`;
     }
 
     if (paths.companyOverlaps && paths.companyOverlaps.length > 0) {
@@ -892,6 +968,16 @@ ${pathsMd}`;
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab.url || !tab.url.includes("linkedin.com/company/")) {
         throw new Error("Please navigate to a LinkedIn company page.");
+      }
+
+      // Pre-flight: verify API key is configured before starting
+      const intelSettings = await chrome.storage.local.get({ provider: "openai", apiKeys: {}, apiKey: "" });
+      const intelProv = intelSettings.provider || "openai";
+      const intelHasKey = (intelSettings.apiKeys && intelSettings.apiKeys[intelProv]) || (intelProv === "openai" && intelSettings.apiKey);
+      if (!intelHasKey) {
+        throw new Error(
+          `No API key saved for ${intelProv}. Open Settings (⚙) and click "Save Settings" after entering your key.`
+        );
       }
 
       await chrome.runtime.sendMessage({

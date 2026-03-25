@@ -14,7 +14,7 @@ chrome.sidePanel
   .catch((error) => console.error(error));
 
 const SYSTEM_PROMPT =
-  "You are a professional networking analyst. You analyze LinkedIn profiles and provide structured insights about how a person's experience and skills could help someone achieve their goal — whether that's selling, hiring, fundraising, finding advisors, or building partnerships. Be specific and actionable. Use markdown formatting for your response.";
+  "You are a professional networking analyst. Analyze LinkedIn profiles and provide specific, actionable insights on how someone can help the user achieve their goal. Use markdown formatting.";
 
 // ── Migrate API keys from sync → local (one-time) ─────────────────
 
@@ -38,12 +38,21 @@ async function migrateSettingsFromSync() {
 
 migrateSettingsFromSync().catch(console.error);
 
+let cancelled = false;
+
 // ── Message listener ───────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "startAnalysis") {
+    cancelled = false;
     runAnalysis(message.tabId, message.projectDescription);
     sendResponse({ started: true });
+    return false;
+  }
+  if (message.type === "cancelAnalysis") {
+    cancelled = true;
+    chrome.storage.local.set({ analysisJob: { status: "idle" } });
+    sendResponse({ ok: true });
     return false;
   }
   if (message.type === "getJobStatus") {
@@ -77,6 +86,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── Main analysis pipeline ─────────────────────────────────────────
 
+function checkCancelled() {
+  if (cancelled) throw new Error("__cancelled__");
+}
+
 async function runAnalysis(tabId, projectDescription) {
   try {
     // 1. Scrape
@@ -92,6 +105,8 @@ async function runAnalysis(tabId, projectDescription) {
         "Could not read profile data. Make sure the full profile is loaded."
       );
     }
+
+    checkCancelled();
 
     // 2. Enrich — scrape company pages for current + previous employer
     let companyProfiles = [];
@@ -138,6 +153,8 @@ async function runAnalysis(tabId, projectDescription) {
       }
     }
 
+    checkCancelled();
+
     // 2b. Gather recent original posts for ice breakers
     let recentPosts = [];
     try {
@@ -180,6 +197,8 @@ async function runAnalysis(tabId, projectDescription) {
     } catch (e) {
       // Posts scraping is optional — continue without
     }
+
+    checkCancelled();
 
     // 2c. Scrape mutual connections if available
     let mutualConnections = [];
@@ -227,6 +246,8 @@ async function runAnalysis(tabId, projectDescription) {
       }
     }
 
+    checkCancelled();
+
     // 2d. Cross-reference with saved reports for Paths to Connect
     let pathsToConnect = null;
     try {
@@ -237,6 +258,8 @@ async function runAnalysis(tabId, projectDescription) {
     } catch (e) {
       // Non-critical — continue without
     }
+
+    checkCancelled();
 
     // 3. Analyze
     await setJob({
@@ -268,7 +291,8 @@ async function runAnalysis(tabId, projectDescription) {
       );
     }
 
-    const prompt = buildPrompt(profileData, projectDescription, companyProfiles, recentPosts);
+    const pathsSummary = buildPathsSummaryForPrompt(pathsToConnect);
+    const prompt = buildPrompt(profileData, projectDescription, companyProfiles, recentPosts, pathsSummary);
     const markdown = await callLLM(provider, model, apiKey, prompt);
 
     // 4. Done
@@ -287,6 +311,7 @@ async function runAnalysis(tabId, projectDescription) {
     await setJob({ status: "done", result: report });
     await autoSaveReport(report);
   } catch (err) {
+    if (err.message === "__cancelled__") return;
     await setJob({ status: "error", error: err.message });
   }
 }
@@ -350,6 +375,26 @@ async function callLLM(provider, model, apiKey, userPrompt) {
 // ── OpenAI ─────────────────────────────────────────────────────────
 
 async function callOpenAI(model, apiKey, userPrompt) {
+  const isReasoningModel = /^(o1|o3|o4)/.test(model);
+
+  const body = {
+    model,
+    messages: [
+      ...(isReasoningModel ? [] : [{ role: "system", content: SYSTEM_PROMPT }]),
+      {
+        role: isReasoningModel ? "developer" : "user",
+        content: isReasoningModel ? SYSTEM_PROMPT + "\n\n" + userPrompt : userPrompt,
+      },
+    ],
+  };
+
+  if (isReasoningModel) {
+    body.max_completion_tokens = 4000;
+  } else {
+    body.temperature = 0.7;
+    body.max_tokens = 4000;
+  }
+
   const response = await fetch(
     "https://api.openai.com/v1/chat/completions",
     {
@@ -358,15 +403,7 @@ async function callOpenAI(model, apiKey, userPrompt) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: 0.7,
-        max_completion_tokens: 4000,
-      }),
+      body: JSON.stringify(body),
     }
   );
 
@@ -648,7 +685,7 @@ function buildIntelMapPrompt(company, people, warmPaths, goal) {
     ? warmPaths.map((wp) => `* ${wp.name}: ${wp.connection} (analyzed ${wp.analyzedDate})`).join("\n")
     : "None";
 
-  return `Given my goal and this target company, analyze these employees and my existing network connections to build an engagement strategy.
+  return `Build an engagement strategy for this target company based on my goal, these employees, and my warm paths.
 
 ## My Goal
 ${goal}
@@ -659,12 +696,12 @@ ${companyInfo}
 ## People at Company
 ${peopleList}
 
-## My Existing Warm Paths (people I've previously analyzed who connect to this company)
+## Warm Paths (previously analyzed contacts who connect to this company)
 ${warmPathsList}
 
 ---
 
-Analyze each person listed above and respond in this EXACT JSON format (no markdown, no code fences, just raw JSON):
+Respond in raw JSON only (no markdown, no code fences):
 
 {
   "targetPeople": [
@@ -681,19 +718,14 @@ Analyze each person listed above and respond in this EXACT JSON format (no markd
       "step": 1,
       "type": "warm_intro|cold_outreach|internal_referral",
       "person": "name",
-      "via": "name of warm path contact if warm_intro, empty otherwise",
-      "action": "specific outreach approach in one sentence",
+      "via": "warm path contact name if warm_intro, else empty",
+      "action": "specific outreach approach referencing their title and context",
       "reason": "why this person and this order"
     }
   ]
 }
 
-Rules:
-* targetPeople should include ALL people from the list, ranked by relevance to my goal
-* Role must be one of: champion, decision_maker, evaluator, influencer, blocker, connector
-* approachSequence should be ordered strategically — warm intros first, then cold outreach
-* If warm paths exist, use them in the approach sequence
-* Be specific in actions — reference the person's actual title and company context`;
+Include ALL people ranked by relevance. Order approach sequence strategically: warm intros first, then cold outreach. Use warm paths when available.`;
 }
 
 // ── Paths to Connect ────────────────────────────────────────────────
@@ -855,6 +887,7 @@ async function findPathsToConnect(profileData, mutualConnections = []) {
   paths.networkStats.topCompanies = Object.fromEntries(sortedCompanies);
 
   // Process mutual connections — cross-reference with saved reports
+  const targetLocation = (profileData.location || "").toLowerCase().trim();
   if (mutualConnections.length > 0) {
     const savedNames = new Set(candidates.map((c) => c.name.toLowerCase()));
 
@@ -866,6 +899,14 @@ async function findPathsToConnect(profileData, mutualConnections = []) {
             (c) => c.name.toLowerCase() === mc.name.toLowerCase()
           )
         : null;
+
+      const connectionReasons = enrichMutualConnection(
+        mc,
+        savedReport,
+        targetCompanies,
+        targetCurrentCompany,
+        targetLocation
+      );
 
       paths.mutualConnections.push({
         name: mc.name,
@@ -879,13 +920,17 @@ async function findPathsToConnect(profileData, mutualConnections = []) {
               day: "numeric",
             })
           : "",
+        connectionReasons,
       });
     }
 
-    // Sort: analyzed connections first, then by name
+    // Sort: analyzed first, then by number of reasons (most relevant first), then by name
     paths.mutualConnections.sort((a, b) => {
       if (a.isAnalyzed && !b.isAnalyzed) return -1;
       if (!a.isAnalyzed && b.isAnalyzed) return 1;
+      const aReasons = (a.connectionReasons || []).length;
+      const bReasons = (b.connectionReasons || []).length;
+      if (bReasons !== aReasons) return bReasons - aReasons;
       return a.name.localeCompare(b.name);
     });
   }
@@ -902,9 +947,213 @@ function dedupeByKey(arr, key) {
   });
 }
 
+// ── Mutual connection enrichment ──────────────────────────────────
+
+function parseCompanyFromTitle(title) {
+  if (!title) return "";
+  // LinkedIn titles: "Role at Company" or "Role @ Company"
+  const atMatch = title.match(/\s+(?:at|@)\s+(.+)$/i);
+  if (atMatch) return atMatch[1].trim().toLowerCase();
+  // "Role - Company" (less common)
+  const dashMatch = title.match(/\s+-\s+([^|]+)$/);
+  if (dashMatch) return dashMatch[1].trim().toLowerCase();
+  return "";
+}
+
+function extractTitleKeywords(title) {
+  if (!title) return new Set();
+  const roleWords = new Set([
+    "engineer", "engineering", "developer", "product", "design", "designer",
+    "marketing", "sales", "data", "science", "scientist", "manager", "director",
+    "vp", "founder", "cto", "ceo", "coo", "cfo", "analyst", "consultant",
+    "architect", "operations", "growth", "strategy", "ai", "ml", "software",
+    "hardware", "research", "security", "devops", "infrastructure", "platform",
+    "mobile", "frontend", "backend", "fullstack", "cloud", "finance", "legal",
+    "hr", "recruiting", "partnerships", "business", "development",
+  ]);
+  const words = title.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/);
+  return new Set(words.filter((w) => roleWords.has(w)));
+}
+
+function locationsOverlap(loc1, loc2) {
+  if (!loc1 || !loc2) return false;
+  const a = loc1.toLowerCase().replace(/[·]/g, ",");
+  const b = loc2.toLowerCase().replace(/[·]/g, ",");
+  // Split into parts (city, state, country)
+  const partsA = a.split(",").map((s) => s.trim()).filter(Boolean);
+  const partsB = b.split(",").map((s) => s.trim()).filter(Boolean);
+  // Check if any meaningful part matches (skip very short tokens)
+  for (const pa of partsA) {
+    if (pa.length < 3) continue;
+    for (const pb of partsB) {
+      if (pb.length < 3) continue;
+      if (pa.includes(pb) || pb.includes(pa)) return true;
+    }
+  }
+  return false;
+}
+
+function enrichMutualConnection(mc, savedReport, targetCompanies, targetCurrentCompany, targetLocation) {
+  const reasons = [];
+  const mcLocation = (mc.location || "").toLowerCase().trim();
+  const mcTitle = (mc.title || "").toLowerCase().trim();
+
+  if (savedReport && savedReport.experience) {
+    // Analyzed mutual: compare full experience
+    const savedExp = (savedReport.experience || []).map((e) => ({
+      company: (typeof e === "string" ? e : e.company || "").toLowerCase().trim(),
+      title: typeof e === "string" ? "" : e.title || "",
+      isCurrent: typeof e === "string" ? false : (e.duration || "").toLowerCase().includes("present"),
+    }));
+
+    // Shared companies
+    const sharedCompanies = new Set();
+    for (const tc of targetCompanies) {
+      if (!tc.company || tc.company.length < 2) continue;
+      for (const sc of savedExp) {
+        if (!sc.company || sc.company.length < 2) continue;
+        if (tc.company.includes(sc.company) || sc.company.includes(tc.company)) {
+          const displayName = tc.company.length > sc.company.length ? tc.company : sc.company;
+          sharedCompanies.add(displayName);
+        }
+      }
+    }
+    for (const company of sharedCompanies) {
+      reasons.push({ type: "shared_company", detail: `Both worked at ${company}` });
+    }
+
+    // Bridge: mutual currently works at target's current company
+    if (targetCurrentCompany && targetCurrentCompany.company) {
+      for (const sc of savedExp) {
+        if (sc.isCurrent && sc.company && (sc.company.includes(targetCurrentCompany.company) || targetCurrentCompany.company.includes(sc.company))) {
+          if (!sharedCompanies.has(targetCurrentCompany.company)) {
+            reasons.push({ type: "same_company", detail: `Currently works at ${targetCurrentCompany.company}` });
+          }
+          break;
+        }
+      }
+    }
+
+    // Role overlap
+    const targetRoleKeywords = new Set();
+    for (const tc of targetCompanies) {
+      for (const kw of extractTitleKeywords(tc.title)) targetRoleKeywords.add(kw);
+    }
+    const savedRoleKeywords = new Set();
+    for (const sc of savedExp) {
+      for (const kw of extractTitleKeywords(sc.title)) savedRoleKeywords.add(kw);
+    }
+    const overlap = [...targetRoleKeywords].filter((kw) => savedRoleKeywords.has(kw));
+    if (overlap.length > 0) {
+      reasons.push({ type: "role_overlap", detail: `Both in ${overlap.slice(0, 3).join(", ")}` });
+    }
+  } else {
+    // Non-analyzed: use title/location only
+    const mcCompany = parseCompanyFromTitle(mc.title);
+    if (mcCompany) {
+      for (const tc of targetCompanies) {
+        if (!tc.company || tc.company.length < 2) continue;
+        if (tc.company.includes(mcCompany) || mcCompany.includes(tc.company)) {
+          reasons.push({ type: "shared_company", detail: `Also connected to ${tc.company}` });
+          break;
+        }
+      }
+    }
+
+    // Role overlap from title
+    const targetRoleKeywords = new Set();
+    for (const tc of targetCompanies) {
+      for (const kw of extractTitleKeywords(tc.title)) targetRoleKeywords.add(kw);
+    }
+    const mcRoleKeywords = extractTitleKeywords(mc.title);
+    const overlap = [...targetRoleKeywords].filter((kw) => mcRoleKeywords.has(kw));
+    if (overlap.length > 0) {
+      reasons.push({ type: "role_overlap", detail: `Both in ${overlap.slice(0, 3).join(", ")}` });
+    }
+  }
+
+  // Geographic overlap (works for both analyzed and non-analyzed)
+  if (locationsOverlap(mcLocation, targetLocation)) {
+    // Extract a readable location snippet
+    const parts = (mc.location || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const shortLoc = parts.slice(0, 2).join(", ");
+    reasons.push({ type: "same_location", detail: shortLoc || mc.location });
+  }
+
+  return reasons;
+}
+
+// ── Paths summary for LLM prompt ──────────────────────────────────
+
+function buildPathsSummaryForPrompt(pathsToConnect, maxEntries = 5) {
+  if (!pathsToConnect) return "";
+
+  const lines = [];
+  let count = 0;
+
+  // Mutual connections with reasons (most valuable)
+  const enrichedMutuals = (pathsToConnect.mutualConnections || []).filter(
+    (mc) => mc.connectionReasons && mc.connectionReasons.length > 0
+  );
+  for (const mc of enrichedMutuals) {
+    if (count >= maxEntries) break;
+    const reasons = mc.connectionReasons.map((r) => r.detail).join("; ");
+    const tag = mc.isAnalyzed ? " [ANALYZED]" : "";
+    lines.push(`- ${mc.name} (${mc.title})${tag} — ${reasons}`);
+    count++;
+  }
+
+  // Mutual connections without reasons (still useful context)
+  const plainMutuals = (pathsToConnect.mutualConnections || []).filter(
+    (mc) => !mc.connectionReasons || mc.connectionReasons.length === 0
+  );
+  for (const mc of plainMutuals) {
+    if (count >= maxEntries) break;
+    const tag = mc.isAnalyzed ? " [ANALYZED]" : "";
+    lines.push(`- ${mc.name} (${mc.title})${tag}`);
+    count++;
+  }
+
+  // Company bridges
+  for (const b of pathsToConnect.companyBridges || []) {
+    if (count >= maxEntries) break;
+    lines.push(`- [Company bridge] ${b.savedName} currently works at ${b.company} as ${b.savedTitle}`);
+    count++;
+  }
+
+  // Company overlaps
+  for (const o of pathsToConnect.companyOverlaps || []) {
+    if (count >= maxEntries) break;
+    lines.push(`- [Shared company] ${o.savedName} also worked at ${o.company}`);
+    count++;
+  }
+
+  // Introduction chains
+  for (const ic of pathsToConnect.introductionChains || []) {
+    if (count >= maxEntries) break;
+    lines.push(`- [Intro path] ${ic.savedName} previously worked at ${ic.targetCompany} as ${ic.savedTitle}`);
+    count++;
+  }
+
+  if (lines.length === 0) {
+    // Even without enrichment reasons, if there are mutual connections, include them
+    const allMutuals = pathsToConnect.mutualConnections || [];
+    if (allMutuals.length > 0) {
+      for (const mc of allMutuals.slice(0, maxEntries)) {
+        const tag = mc.isAnalyzed ? " [ANALYZED]" : "";
+        lines.push(`- ${mc.name} (${mc.title})${tag}`);
+      }
+    }
+  }
+
+  if (lines.length === 0) return "";
+
+  return `**Connection Paths to This Person:**\nYou have the following warm paths. Use these to recommend a connection strategy.\n${lines.join("\n")}`;
+}
+
 // ── Prompt builder ─────────────────────────────────────────────────
 
-function buildPrompt(profile, project, companies = [], posts = []) {
+function buildPrompt(profile, project, companies = [], posts = [], pathsSummary = "") {
   const companyContext =
     companies.length > 0
       ? companies
@@ -921,7 +1170,7 @@ function buildPrompt(profile, project, companies = [], posts = []) {
           .join("\n\n")
       : "";
 
-  return `Analyze this LinkedIn profile and explain how this person could professionally help me achieve my goal. My goal could be anything — selling a product, hiring, fundraising, finding advisors, building partnerships, or collaboration. Tailor your entire analysis to the specific goal described below.
+  return `Analyze this LinkedIn profile in relation to my goal. Adapt your entire analysis to the goal type (selling, hiring, fundraising, advisory, partnership, research, or networking).
 
 ## My Goal
 ${project}
@@ -980,51 +1229,28 @@ ${
     : ""
 }
 
+${pathsSummary}
+
 ---
 
-IMPORTANT — First, read "My Goal" above and classify it into one of these categories (do not output this classification, just use it internally to adapt your entire analysis):
-- **Selling**: pitching a product/service to this person or their company
-- **Hiring/Recruiting**: evaluating this person as a potential hire or recruiting them
-- **Fundraising**: seeking investment or financial support
-- **Advisory**: looking for mentors, advisors, or domain experts
-- **Partnership**: exploring strategic partnerships or collaborations
-- **Research/Learning**: understanding an industry, role, or domain through this person's lens
-- **Networking**: general relationship-building with no specific ask yet
-
-Adapt ALL sections below to match this goal type. For example:
-- If selling: frame angles as sales opportunities, consider their buying power and pain points
-- If hiring: evaluate their fit, culture signals, and what would attract them
-- If fundraising: assess their investment thesis alignment, portfolio, and network
-- If advisory: focus on their domain depth and willingness to mentor
-- If partnership: identify mutual value and complementary strengths
-- If research/learning: highlight what unique insights they can share
-- If networking: focus on long-term relationship value and shared interests
-
-Your response MUST contain ONLY the four sections listed below — nothing else. Work Experience is displayed separately in the UI, so you must NEVER list or summarize job history. Skip straight to analysis. Use numbered lists (1. 2. 3.) for all items in every section:
+Respond with ONLY these ${pathsSummary ? "five" : "four"} sections. Use numbered lists. Never list or summarize job history (it's shown separately in the UI). Be specific throughout — reference actual roles, companies, achievements, and details rather than generic statements.
 
 ### Executive Profile Summary
-Synthesize ALL the information above — profile, experience, company context, and recent posts — into exactly 3 numbered points tailored to MY SPECIFIC GOAL stated above. Imagine the reader has only 10 seconds. Each point should:
-1. Directly address WHY this person matters for my specific goal (e.g., if I'm selling: their buying power; if hiring: their fit; if seeking advisors: their domain depth)
-2. Reference specific details — actual roles, companies, numbers, or achievements (not generic statements)
-3. Make the reader say "I need to talk to this person" in the context of my goal
-Focus on: their relevance to my goal, current influence/decision-making power, and any unique positioning (rare skill combinations, strategic relationships, or industry timing) that makes them especially valuable for what I'm trying to accomplish.
+Exactly 3 points synthesizing all info above. Each point must: address why this person matters for my specific goal, reference concrete details (roles, companies, numbers), and convey their unique value and influence.
 
 ### Relevant Skills & Experience
-Identify which of their skills and past roles are most relevant to my goal. Be specific about how each applies.
+Which skills and past roles are most relevant to my goal, and specifically how each applies.
 
 ### Strategic Engagement Angles
-Based on my goal type, identify 3-5 specific, creative angles for engaging this person. Focus primarily on their experience from the LAST 2 YEARS (present role and any roles held within the past 2 years). If those recent roles provide sparse or limited detail, expand your analysis to include the last 5 years of experience. For each angle:
-1. Reference a specific detail from their recent experience (current company initiatives, recent role responsibilities, a skill actively in use, their current industry context)
-2. Frame the angle through the lens of my goal (e.g., if selling: how my offering solves their pain; if hiring: what about this opportunity would excite them; if fundraising: why this aligns with their investment interests; if advisory: what specific expertise I need from them)
-3. Be concrete — reference actual roles, companies, and responsibilities. Don't say "they have relevant experience" — say exactly WHAT and HOW
-4. Consider their seniority and position — tailor whether they're a decision-maker, influencer, evaluator, or connector relative to my goal
-5. If Company Context is provided, use the company's industry, size, specialties, and description to craft more specific angles — especially when the person's own role descriptions are sparse
+3-5 specific angles for engaging this person, focused on their LAST 2 YEARS of experience (expand to 5 years if recent detail is sparse). Each angle must reference a specific detail from their experience, frame it through my goal, and account for their seniority/role (decision-maker, influencer, evaluator, or connector). Use Company Context when available to craft sharper angles.
 
 ### Ice Breakers
-Imagine I'm about to sit down in a meeting with this person. Based on their work history, current position, AND their recent original LinkedIn posts (if provided), suggest 4-5 specific topics or talking points I could naturally bring up to build rapport and naturally transition toward my goal. Prioritize topics from their recent posts — these reflect what they're actively thinking about and passionate about right now. For each topic:
-* Reference the specific post, role detail, or career milestone that inspired it
-* IMPORTANT: If referencing a LinkedIn post that has a POST_URL, you MUST include it as a markdown link at the end of that ice breaker, formatted as: [View Post](URL). This is critical so the reader can review the post before the meeting.
-* Frame it as a natural conversation starter, not a scripted message
-* Connect it back to my specific goal when possible
-If no recent posts are available, base ice breakers on their work history and profile details instead.`;
+4-5 natural conversation starters drawn equally from their recent LinkedIn posts AND recent work experience (roles, projects, career milestones). Aim for a balanced mix — roughly half from posts and half from experience. Each should reference its source and connect back to my goal. If a post has a POST_URL, include it as: [View Post](URL).${
+  pathsSummary
+    ? `
+
+### Connection Strategy
+Based on the Connection Paths above, recommend the best 1-2 warm introduction paths. For each, name the specific mutual connection or warm path, explain why they are the strongest bridge (shared company, role overlap, geography, etc.), and suggest a concrete ask or framing for the introduction. Keep it actionable and specific.`
+    : ""
+}`;
 }
