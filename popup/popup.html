@@ -74,6 +74,28 @@
         <div id="intel-map-results" class="intel-map hidden"></div>
       </div>
 
+      <!-- Chat Drawer -->
+      <div id="chat-drawer" class="chat-drawer hidden">
+        <div id="chat-toggle" class="chat-drawer-toggle">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+          </svg>
+          <span>Ask about this profile</span>
+          <span class="chat-toggle-arrow"></span>
+        </div>
+        <div class="chat-drawer-body">
+          <div id="chat-messages" class="chat-messages"></div>
+          <div class="chat-input-area">
+            <input type="text" id="chat-input" placeholder="Ask a question about this profile..." />
+            <button id="chat-send-btn" class="chat-send-btn" title="Send">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Saved Reports View -->
       <div id="saved-view" class="hidden">
         <div class="saved-view-header">

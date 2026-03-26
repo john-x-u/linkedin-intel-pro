@@ -82,6 +82,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (message.type === "chatMessage") {
+    handleChatMessage(message.messages)
+      .then((content) => sendResponse({ content }))
+      .catch((err) => sendResponse({ error: err.message }));
+    return true; // async sendResponse
+  }
 });
 
 // ── Main analysis pipeline ─────────────────────────────────────────
@@ -480,6 +486,142 @@ async function callGoogle(model, apiKey, userPrompt) {
     throw new Error(
       err.error?.message || `Google AI API error: ${response.status}`
     );
+  }
+
+  const data = await response.json();
+  return data.candidates[0].content.parts.map((p) => p.text).join("\n");
+}
+
+// ── Chat (multi-turn) ─────────────────────────────────────────────
+
+const CHAT_SYSTEM_PROMPT =
+  "You are a professional networking analyst. The user has analyzed a LinkedIn profile and wants to ask follow-up questions about it. Answer questions using the profile data provided in the conversation. Be specific, actionable, and concise. Use markdown formatting.";
+
+async function handleChatMessage(messages) {
+  const settings = await chrome.storage.local.get({
+    provider: "openai",
+    model: "gpt-5.4",
+    apiKeys: {},
+    apiKey: "",
+  });
+
+  const provider = settings.provider || "openai";
+  const model = settings.model || "gpt-5.4";
+  const apiKey =
+    (settings.apiKeys && settings.apiKeys[provider]) ||
+    (provider === "openai" ? settings.apiKey : "");
+
+  if (!apiKey) {
+    throw new Error(`No API key configured for ${provider}. Check Settings.`);
+  }
+
+  return callLLMChat(provider, model, apiKey, CHAT_SYSTEM_PROMPT, messages);
+}
+
+async function callLLMChat(provider, model, apiKey, systemPrompt, messages) {
+  switch (provider) {
+    case "openai":
+      return callOpenAIChat(model, apiKey, systemPrompt, messages);
+    case "anthropic":
+      return callAnthropicChat(model, apiKey, systemPrompt, messages);
+    case "google":
+      return callGoogleChat(model, apiKey, systemPrompt, messages);
+    default:
+      throw new Error(`Unknown provider: ${provider}`);
+  }
+}
+
+async function callOpenAIChat(model, apiKey, systemPrompt, messages) {
+  const isReasoningModel = /^(o1|o3|o4)/.test(model);
+
+  const body = {
+    model,
+    messages: [
+      ...(isReasoningModel
+        ? [{ role: "developer", content: systemPrompt }]
+        : [{ role: "system", content: systemPrompt }]),
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
+    ],
+  };
+
+  if (isReasoningModel) {
+    body.max_completion_tokens = 2000;
+  } else {
+    body.temperature = 0.7;
+    body.max_tokens = 2000;
+  }
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `OpenAI API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+async function callAnthropicChat(model, apiKey, systemPrompt, messages) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2000,
+      system: systemPrompt,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Anthropic API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+async function callGoogleChat(model, apiKey, systemPrompt, messages) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  const contents = messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents,
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 2000,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Google AI API error: ${response.status}`);
   }
 
   const data = await response.json();
@@ -1245,7 +1387,7 @@ Which skills and past roles are most relevant to my goal, and specifically how e
 3-5 specific angles for engaging this person, focused on their LAST 2 YEARS of experience (expand to 5 years if recent detail is sparse). Each angle must reference a specific detail from their experience, frame it through my goal, and account for their seniority/role (decision-maker, influencer, evaluator, or connector). Use Company Context when available to craft sharper angles.
 
 ### Ice Breakers
-4-5 natural conversation starters drawn equally from their recent LinkedIn posts AND recent work experience (roles, projects, career milestones). Aim for a balanced mix — roughly half from posts and half from experience. Each should reference its source and connect back to my goal. If a post has a POST_URL, include it as: [View Post](URL).${
+4-5 natural conversation starters drawn equally from their recent LinkedIn posts AND recent work experience (roles, projects, career milestones). Aim for a balanced mix — roughly half from posts and half from experience. Each should reference its source and connect back to my goal. If a post has a real POST_URL (not "N/A"), include it as: [View Post](URL). Do NOT generate a [View Post] link if the POST_URL is "N/A" or missing.${
   pathsSummary
     ? `
 

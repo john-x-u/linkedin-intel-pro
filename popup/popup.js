@@ -98,6 +98,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     hideError();
     results.classList.add("hidden");
     intelMapResults.classList.add("hidden");
+    hideChatDrawer();
 
     try {
       const [tab] = await chrome.tabs.query({
@@ -419,6 +420,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     results.classList.remove("hidden");
     hideError();
+
+    // Show chat drawer and reset conversation for new report
+    resetChat();
+    showChatDrawer();
   }
 
   function buildConnectionReasonsHtml(reasons) {
@@ -1039,6 +1044,145 @@ ${pathsMd}`;
     intelBtnText.textContent = loading ? (text || "Building...") : "Build Intel Map";
     intelBtnSpinner.classList.toggle("hidden", !loading);
     toggleOverlay(loading, text);
+  }
+
+  // ── Chat Drawer ──────────────────────────────────────────────────
+
+  const chatDrawer = document.getElementById("chat-drawer");
+  const chatToggle = document.getElementById("chat-toggle");
+  const chatMessages = document.getElementById("chat-messages");
+  const chatInput = document.getElementById("chat-input");
+  const chatSendBtn = document.getElementById("chat-send-btn");
+
+  let chatHistory = []; // [{role: "user"|"assistant", content: "..."}]
+  let chatBusy = false;
+
+  chatToggle.addEventListener("click", () => {
+    chatDrawer.classList.toggle("open");
+    if (chatDrawer.classList.contains("open")) {
+      chatInput.focus();
+    }
+  });
+
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+
+  chatSendBtn.addEventListener("click", sendChatMessage);
+
+  function showChatDrawer() {
+    chatDrawer.classList.remove("hidden");
+  }
+
+  function hideChatDrawer() {
+    chatDrawer.classList.add("hidden");
+    chatDrawer.classList.remove("open");
+  }
+
+  function resetChat() {
+    chatHistory = [];
+    chatMessages.innerHTML = "";
+  }
+
+  function buildProfileContext(report) {
+    let ctx = `Profile: ${report.name || "Unknown"}\n`;
+    if (report.profileUrl) ctx += `URL: ${report.profileUrl}\n`;
+    if (report.project) ctx += `Research Goal: ${report.project}\n`;
+    ctx += `\n--- Analysis ---\n${report.markdown || ""}\n`;
+
+    if (report.experience && report.experience.length > 0) {
+      ctx += "\n--- Work Experience ---\n";
+      for (const exp of report.experience) {
+        if (typeof exp === "string") {
+          ctx += `- ${exp}\n`;
+        } else {
+          ctx += `- ${exp.title || ""} at ${exp.company || ""} (${exp.duration || ""})\n`;
+          if (exp.description) ctx += `  ${exp.description}\n`;
+        }
+      }
+    }
+
+    if (report.recentPosts && report.recentPosts.length > 0) {
+      ctx += "\n--- Recent Posts ---\n";
+      for (const post of report.recentPosts.slice(0, 5)) {
+        ctx += `- ${post.content || post}\n`;
+      }
+    }
+
+    return ctx;
+  }
+
+  async function sendChatMessage() {
+    const text = chatInput.value.trim();
+    if (!text || chatBusy) return;
+
+    chatBusy = true;
+    chatSendBtn.disabled = true;
+    chatInput.value = "";
+
+    // Build the user message — prepend profile context for the first message
+    let userContent = text;
+    if (chatHistory.length === 0 && lastReport.name) {
+      const ctx = buildProfileContext(lastReport);
+      userContent = `Here is the LinkedIn profile data:\n\n${ctx}\n\n---\n\nUser question: ${text}`;
+    }
+
+    chatHistory.push({ role: "user", content: userContent });
+
+    // Show user bubble (display only the actual question)
+    appendChatBubble("user", text);
+
+    // Show typing indicator
+    const typingEl = document.createElement("div");
+    typingEl.className = "chat-typing";
+    typingEl.innerHTML = '<div class="chat-typing-dot"></div><div class="chat-typing-dot"></div><div class="chat-typing-dot"></div>';
+    chatMessages.appendChild(typingEl);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "chatMessage",
+        messages: chatHistory,
+      });
+
+      typingEl.remove();
+
+      if (response && response.error) {
+        throw new Error(response.error);
+      }
+
+      const assistantText = response?.content || "Sorry, I couldn't get a response.";
+      chatHistory.push({ role: "assistant", content: assistantText });
+      appendChatBubble("assistant", assistantText);
+    } catch (err) {
+      typingEl.remove();
+      const errEl = document.createElement("div");
+      errEl.className = "chat-error";
+      errEl.textContent = err.message || "Failed to get response";
+      chatMessages.appendChild(errEl);
+      // Remove failed user message from history so they can retry
+      chatHistory.pop();
+    }
+
+    chatBusy = false;
+    chatSendBtn.disabled = false;
+    chatInput.focus();
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function appendChatBubble(role, text) {
+    const bubble = document.createElement("div");
+    bubble.className = `chat-msg ${role}`;
+    if (role === "assistant") {
+      bubble.innerHTML = markdownToHtml(text);
+    } else {
+      bubble.textContent = text;
+    }
+    chatMessages.appendChild(bubble);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
   function displayIntelMap(data) {
