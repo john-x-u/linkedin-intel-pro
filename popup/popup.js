@@ -837,6 +837,36 @@ ${pathsMd}`;
       }
     }
 
+    if (data.orgChart && data.orgChart.length > 0) {
+      md += "\n### Org Chart\n\n";
+      // Build tree for markdown export
+      const nodeMap = new Map();
+      for (const node of data.orgChart) {
+        nodeMap.set(node.name, { ...node, children: [] });
+      }
+      const roots = [];
+      for (const node of data.orgChart) {
+        const treeNode = nodeMap.get(node.name);
+        if (node.reportsTo && nodeMap.has(node.reportsTo)) {
+          nodeMap.get(node.reportsTo).children.push(treeNode);
+        } else {
+          roots.push(treeNode);
+        }
+      }
+      function renderMdTree(node, prefix, isLast) {
+        const connector = prefix === "" ? "" : (isLast ? "└─ " : "├─ ");
+        const coverageIcon = node.coverage === "direct" ? "🟢" : node.coverage === "indirect" ? "🟡" : "🔴";
+        md += `${prefix}${connector}${coverageIcon} **${node.name}** — ${node.title || ""}`;
+        if (node.department) md += ` (${node.department})`;
+        md += "\n";
+        const childPrefix = prefix === "" ? "" : prefix + (isLast ? "   " : "│  ");
+        node.children.forEach((child, i) => {
+          renderMdTree(child, childPrefix, i === node.children.length - 1);
+        });
+      }
+      roots.forEach((root, i) => renderMdTree(root, "", i === roots.length - 1));
+    }
+
     return md;
   }
 
@@ -1019,7 +1049,7 @@ ${pathsMd}`;
 
     const statusMap = {
       intel_scraping_company: "Researching company...",
-      intel_scraping_people: "Scanning key people...",
+      intel_scraping_people: "Deep-scanning org by seniority tier...",
       intel_cross_referencing: "Finding warm paths...",
       intel_analyzing: "Building engagement strategy...",
     };
@@ -1200,6 +1230,16 @@ ${pathsMd}`;
     html += `Export .md</button>`;
     html += `</div></div>`;
 
+    // Tab bar — always show so users know org chart exists
+    const hasOrgChart = data.orgChart && data.orgChart.length > 0;
+    html += `<div class="intel-tab-bar">`;
+    html += `<button class="intel-tab active" data-tab="strategy">Strategy</button>`;
+    html += `<button class="intel-tab" data-tab="orgchart">Org Chart</button>`;
+    html += `</div>`;
+
+    // Strategy tab content
+    html += `<div class="intel-tab-content active" id="intel-tab-strategy">`;
+
     // Warm Paths
     html += `<div class="intel-tier">`;
     html += `<div class="intel-tier-header warm">Warm Paths</div>`;
@@ -1259,9 +1299,42 @@ ${pathsMd}`;
     }
     html += `</div>`;
 
+    html += `</div>`; // end strategy tab
+
+    // Org Chart tab content
+    html += `<div class="intel-tab-content" id="intel-tab-orgchart">`;
+    if (hasOrgChart) {
+      html += buildOrgChartHTML(data.orgChart, data.targetPeople);
+    } else {
+      html += `<div class="intel-empty">Org chart data was not returned. Try running the Intel Map again — the AI will infer the reporting structure from employee titles.</div>`;
+    }
+    html += `</div>`;
+
     intelMapResults.innerHTML = html;
     intelMapResults.classList.remove("hidden");
     results.classList.add("hidden");
+
+    // Wire up tab switching
+    const tabs = intelMapResults.querySelectorAll(".intel-tab");
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        tabs.forEach((t) => t.classList.remove("active"));
+        tab.classList.add("active");
+        const target = tab.getAttribute("data-tab");
+        intelMapResults.querySelectorAll(".intel-tab-content").forEach((c) => c.classList.remove("active"));
+        const targetEl = document.getElementById(`intel-tab-${target}`);
+        if (targetEl) targetEl.classList.add("active");
+      });
+    });
+
+    // Wire up org chart collapse/expand
+    intelMapResults.querySelectorAll(".org-node-content.has-children").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        // Don't toggle if clicking a link
+        if (e.target.closest("a")) return;
+        el.closest(".org-node").classList.toggle("collapsed");
+      });
+    });
 
     // Wire up intel map export buttons
     const intelCopyBtn = document.getElementById("intel-copy-btn");
@@ -1291,5 +1364,111 @@ ${pathsMd}`;
         URL.revokeObjectURL(url);
       });
     }
+  }
+
+  // ── Org Chart Builder ─────────────────────────────────────────
+
+  function buildOrgChartHTML(orgChart, targetPeople) {
+    if (!orgChart || orgChart.length === 0) return `<div class="intel-empty">No org chart data available.</div>`;
+
+    // Build a lookup of name → node
+    const nodeMap = new Map();
+    for (const node of orgChart) {
+      nodeMap.set(node.name, { ...node, children: [] });
+    }
+
+    // Build tree relationships
+    const roots = [];
+    for (const node of orgChart) {
+      const treeNode = nodeMap.get(node.name);
+      if (node.reportsTo && nodeMap.has(node.reportsTo)) {
+        nodeMap.get(node.reportsTo).children.push(treeNode);
+      } else {
+        roots.push(treeNode);
+      }
+    }
+
+    // Get role from targetPeople
+    const roleMap = new Map();
+    if (targetPeople) {
+      for (const tp of targetPeople) {
+        roleMap.set(tp.name, tp.role);
+      }
+    }
+
+    // Coverage stats
+    const total = orgChart.length;
+    const accessible = orgChart.filter((n) => n.coverage === "direct" || n.coverage === "indirect").length;
+    const pct = total > 0 ? Math.round((accessible / total) * 100) : 0;
+
+    let html = "";
+
+    // Coverage summary bar
+    html += `<div class="org-coverage-bar">`;
+    html += `<div class="org-coverage-label">${accessible}/${total} accessible (${pct}%)</div>`;
+    html += `<div class="org-coverage-track"><div class="org-coverage-fill" style="width: ${pct}%"></div></div>`;
+    html += `</div>`;
+
+    // Legend
+    html += `<div class="org-coverage-legend">`;
+    html += `<div class="org-legend-item"><div class="coverage-dot direct"></div> 1st / Warm Path</div>`;
+    html += `<div class="org-legend-item"><div class="coverage-dot indirect"></div> 2nd Degree</div>`;
+    html += `<div class="org-legend-item"><div class="coverage-dot none"></div> No Path</div>`;
+    html += `</div>`;
+
+    // Render tree
+    html += `<ul class="org-tree">`;
+    for (const root of roots) {
+      html += renderOrgNode(root, roleMap);
+    }
+    html += `</ul>`;
+
+    return html;
+  }
+
+  function renderOrgNode(node, roleMap) {
+    const hasChildren = node.children && node.children.length > 0;
+    let html = `<li class="org-node">`;
+
+    html += `<div class="org-node-content${hasChildren ? " has-children" : ""}">`;
+
+    // Chevron for collapsible nodes
+    if (hasChildren) {
+      html += `<div class="org-node-chevron"></div>`;
+    }
+
+    // Coverage dot
+    html += `<div class="coverage-dot ${escapeHtml(node.coverage || "none")}"></div>`;
+
+    // Name (linked if profileUrl exists)
+    if (node.profileUrl) {
+      html += `<a href="${escapeHtml(node.profileUrl)}" target="_blank" rel="noopener" class="org-node-name">${escapeHtml(node.name)}</a>`;
+    } else {
+      html += `<span class="org-node-name">${escapeHtml(node.name)}</span>`;
+    }
+
+    // Title
+    html += `<span class="org-node-title">${escapeHtml(node.title || "")}</span>`;
+
+    // Role badge (from targetPeople)
+    const role = roleMap.get(node.name);
+    if (role) {
+      const roleClass = role.replace(/[^a-z_]/g, "");
+      html += `<span class="role-badge ${roleClass}">${escapeHtml(role)}</span>`;
+    }
+
+    html += `</div>`; // end org-node-content
+
+    // Render children
+    if (hasChildren) {
+      html += `<ul>`;
+      for (const child of node.children) {
+        html += renderOrgNode(child, roleMap);
+      }
+      html += `</ul>`;
+    }
+
+    html += `</li>`;
+    return html;
   }
 });

@@ -395,10 +395,10 @@ async function callOpenAI(model, apiKey, userPrompt) {
   };
 
   if (isReasoningModel) {
-    body.max_completion_tokens = 4000;
+    body.max_completion_tokens = 8000;
   } else {
     body.temperature = 0.7;
-    body.max_tokens = 4000;
+    body.max_tokens = 8000;
   }
 
   const response = await fetch(
@@ -435,7 +435,7 @@ async function callAnthropic(model, apiKey, userPrompt) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 4000,
+      max_tokens: 8000,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     }),
@@ -476,7 +476,7 @@ async function callGoogle(model, apiKey, userPrompt) {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 4000,
+        maxOutputTokens: 8000,
       },
     }),
   });
@@ -661,10 +661,19 @@ async function runIntelMap(tabId, companyUrl, goal) {
     // 1. Scrape company info
     await setIntelJob({ status: "intel_scraping_company", timestamp: Date.now() });
 
-    const aboutUrl = companyUrl.replace(/\/$/, "").replace(/\/people\/?$/, "").replace(/\/about\/?$/, "") + "/about/";
+    const companyBase = companyUrl.replace(/\/$/, "").replace(/\/people\/?$/, "").replace(/\/about\/?$/, "").replace(/\/posts\/?$/, "");
+    const aboutUrl = companyBase + "/about/";
     await chrome.tabs.update(tabId, { url: aboutUrl });
     await waitForTabLoad(tabId, "/company/", 10000);
     await sleep(1500);
+
+    // LinkedIn sometimes redirects /about/ to /posts/ — re-navigate if needed
+    let currentTab = await chrome.tabs.get(tabId);
+    if (currentTab.url && !currentTab.url.includes("/about")) {
+      await chrome.tabs.update(tabId, { url: aboutUrl });
+      await waitForTabLoad(tabId, "/about", 8000);
+      await sleep(1500);
+    }
 
     let companyData = {};
     try {
@@ -675,13 +684,22 @@ async function runIntelMap(tabId, companyUrl, goal) {
       if (result) companyData = result;
     } catch {}
 
-    // 2. Scrape people
+    // 2. Scrape people (multi-pass search by seniority tier)
     await setIntelJob({ status: "intel_scraping_people", timestamp: Date.now() });
 
-    const peopleUrl = companyUrl.replace(/\/$/, "").replace(/\/people\/?$/, "").replace(/\/about\/?$/, "") + "/people/";
+    const peopleUrl = companyBase + "/people/";
     await chrome.tabs.update(tabId, { url: peopleUrl });
     await waitForTabLoad(tabId, "/people", 10000);
     await sleep(2000);
+
+    // Verify we landed on /people/ — LinkedIn may redirect small company pages
+    currentTab = await chrome.tabs.get(tabId);
+    if (currentTab.url && !currentTab.url.includes("/people")) {
+      // Try one more time
+      await chrome.tabs.update(tabId, { url: peopleUrl });
+      await waitForTabLoad(tabId, "/people", 8000);
+      await sleep(2000);
+    }
 
     let people = [];
     try {
@@ -689,7 +707,16 @@ async function runIntelMap(tabId, companyUrl, goal) {
         target: { tabId },
         files: ["content/scrape-company-people.js"],
       });
-      if (Array.isArray(result)) people = result;
+      if (result && Array.isArray(result.people)) {
+        people = result.people;
+        // Use scraped company name as fallback if about page didn't get it
+        if (!companyData.companyName && result.companyName) {
+          companyData.companyName = result.companyName;
+        }
+      } else if (Array.isArray(result)) {
+        // Backward compat: old format returned plain array
+        people = result;
+      }
     } catch {}
 
     // 3. Cross-reference with saved reports
@@ -728,6 +755,21 @@ async function runIntelMap(tabId, companyUrl, goal) {
       parsed = {};
     }
 
+    // Annotate org chart nodes with coverage and profile URLs
+    const orgChartNodes = (parsed.orgChart || []).map((node) => {
+      const person = people.find((p) => p.name === node.name);
+      const profileUrl = person?.profileUrl || "";
+      const connectionDegree = person?.connectionDegree || "";
+      const isWarmPath = warmPaths.some((wp) => wp.name.toLowerCase() === node.name.toLowerCase());
+      let coverage = "none"; // red
+      if (connectionDegree === "1st" || isWarmPath) {
+        coverage = "direct"; // green
+      } else if (connectionDegree === "2nd") {
+        coverage = "indirect"; // yellow
+      }
+      return { ...node, profileUrl, connectionDegree, coverage };
+    });
+
     const result = {
       companyName: companyData.companyName || "Unknown Company",
       warmPaths,
@@ -736,6 +778,7 @@ async function runIntelMap(tabId, companyUrl, goal) {
         profileUrl: tp.profileUrl || people.find((p) => p.name === tp.name)?.profileUrl || "",
       })),
       approachSequence: parsed.approachSequence || [],
+      orgChart: orgChartNodes,
     };
 
     // Navigate back to company page
@@ -761,6 +804,7 @@ async function autoSaveIntelMap(result, goal) {
     warmPaths: result.warmPaths,
     targetPeople: result.targetPeople,
     approachSequence: result.approachSequence,
+    orgChart: result.orgChart || [],
     timestamp: Date.now(),
   };
 
@@ -820,14 +864,17 @@ function buildIntelMapPrompt(company, people, warmPaths, goal) {
     : "Company info not available";
 
   const peopleList = people.length > 0
-    ? people.map((p) => `* ${p.name} — ${p.title} (${p.connectionDegree || "?"})`).join("\n")
+    ? people.map((p) => {
+        const tier = p.searchTier && p.searchTier !== "default" ? ` [found via: ${p.searchTier}]` : "";
+        return `* ${p.name} — Headline: "${p.title}" (${p.connectionDegree || "?"})${tier}`;
+      }).join("\n")
     : "No people found";
 
   const warmPathsList = warmPaths.length > 0
     ? warmPaths.map((wp) => `* ${wp.name}: ${wp.connection} (analyzed ${wp.analyzedDate})`).join("\n")
     : "None";
 
-  return `Build an engagement strategy for this target company based on my goal, these employees, and my warm paths.
+  return `Build an engagement strategy and inferred org chart for this target company based on my goal, these employees, and my warm paths.
 
 ## My Goal
 ${goal}
@@ -836,6 +883,8 @@ ${goal}
 ${companyInfo}
 
 ## People at Company
+IMPORTANT: The text after "Headline:" is each person's LinkedIn headline, NOT their actual job title at this company. Headlines are often personal taglines (e.g., "Building the future" or "Accelerate everything"). Infer each person's actual role/title at this company from context: their headline, the company's industry, and seniority clues. Use your inferred title (not the raw headline) in your response for the "title" fields.
+
 ${peopleList}
 
 ## Warm Paths (previously analyzed contacts who connect to this company)
@@ -864,10 +913,20 @@ Respond in raw JSON only (no markdown, no code fences):
       "action": "specific outreach approach referencing their title and context",
       "reason": "why this person and this order"
     }
+  ],
+  "orgChart": [
+    {
+      "name": "exact name from people list",
+      "title": "their title",
+      "department": "department name (e.g. Engineering, Sales, Product, Marketing, Operations, Finance, People, Legal)",
+      "reportsTo": "name of their likely manager from this list, or null if they are the most senior person"
+    }
   ]
 }
 
-Include ALL people ranked by relevance. Order approach sequence strategically: warm intros first, then cold outreach. Use warm paths when available.`;
+Include ALL people ranked by relevance. Order approach sequence strategically: warm intros first, then cold outreach. Use warm paths when available.
+
+For orgChart: infer the most likely reporting structure from job titles and seniority. C-suite reports to CEO/founder. VPs report to relevant C-suite. Directors report to VPs. Managers/ICs report to Directors or VPs. If someone's manager is not in the list, set reportsTo to the most senior person in their department. Include ALL people from the list.`;
 }
 
 // ── Paths to Connect ────────────────────────────────────────────────
