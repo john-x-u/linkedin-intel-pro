@@ -382,6 +382,7 @@ async function callLLM(provider, model, apiKey, userPrompt) {
 
 async function callOpenAI(model, apiKey, userPrompt) {
   const isReasoningModel = /^(o1|o3|o4)/.test(model);
+  const isGPT5 = /^gpt-5/.test(model);
 
   const body = {
     model,
@@ -396,7 +397,12 @@ async function callOpenAI(model, apiKey, userPrompt) {
 
   if (isReasoningModel) {
     body.max_completion_tokens = 8000;
+  } else if (isGPT5) {
+    // GPT-5.x uses max_completion_tokens instead of max_tokens
+    body.temperature = 0.7;
+    body.max_completion_tokens = 8000;
   } else {
+    // GPT-4o and older use max_tokens
     body.temperature = 0.7;
     body.max_tokens = 8000;
   }
@@ -533,6 +539,7 @@ async function callLLMChat(provider, model, apiKey, systemPrompt, messages) {
 
 async function callOpenAIChat(model, apiKey, systemPrompt, messages) {
   const isReasoningModel = /^(o1|o3|o4)/.test(model);
+  const isGPT5 = /^gpt-5/.test(model);
 
   const body = {
     model,
@@ -546,7 +553,12 @@ async function callOpenAIChat(model, apiKey, systemPrompt, messages) {
 
   if (isReasoningModel) {
     body.max_completion_tokens = 2000;
+  } else if (isGPT5) {
+    // GPT-5.x uses max_completion_tokens instead of max_tokens
+    body.temperature = 0.7;
+    body.max_completion_tokens = 2000;
   } else {
+    // GPT-4o and older use max_tokens
     body.temperature = 0.7;
     body.max_tokens = 2000;
   }
